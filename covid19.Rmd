@@ -578,7 +578,9 @@ map2 <- leaflet(latest_data) %>%
   )
 
 # Display maps
+
 map1
+
 map2
 
 ```
