@@ -1,0 +1,327 @@
+---
+title: "NYPD Shooting Data"
+output:
+  html_document: 
+    toc: true
+    toc_float: true
+    theme: darkly
+    date: "`r Sys.Date()`"
+editor_options:
+  markdown:
+    wrap: sentence
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+# Loading the data and doing a basic inspection
+
+```{r data_load_and_basic_summary, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+
+url <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+# Load the data
+nypd_data <- read_csv(url)
+
+# Get a summary of the dataset
+summary(nypd_data)
+
+# View the column names
+names(nypd_data)
+```
+
+```{r data_cleanup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+# Clean the data
+nypd_data <- nypd_data %>%
+  # Convert OCCUR_DATE to date type
+  mutate(OCCUR_DATE = mdy(OCCUR_DATE)) %>%
+  # Convert categorical variables to factors
+  mutate(
+    BORO = as.factor(BORO),
+    PERP_SEX = as.factor(PERP_SEX),
+    PERP_RACE = as.factor(PERP_RACE),
+    PERP_AGE_GROUP = as.factor(PERP_AGE_GROUP),
+    VIC_SEX = as.factor(VIC_SEX),
+    VIC_RACE = as.factor(VIC_RACE),
+    VIC_AGE_GROUP = as.factor(VIC_AGE_GROUP),
+    STATISTICAL_MURDER_FLAG = as.factor(STATISTICAL_MURDER_FLAG)
+  )
+```
+
+### Missing Value Analysis
+
+```{r missing_value_analysis, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Missing data summary with percentages - using reframe()
+missing_data_summary <- nypd_data %>%
+  reframe(
+    column = names(.),
+    missing_count = sapply(., function(x) sum(is.na(x))),
+    missing_percent = sapply(., function(x) round(mean(is.na(x)) * 100, 2))
+  )
+
+# Print formatted summary
+print(missing_data_summary, n = Inf)
+```
+
+### Column Removal
+
+In the next step, I am removing `LOC_OF_OCCUR_DESC` and `LOC_CLASSFCTN_DESC` from the dataset.
+The columns have a significant amount of missing data
+
+```{r remove_columns, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+nypd_data <- nypd_data %>%
+  select(-c(LOC_OF_OCCUR_DESC, LOC_CLASSFCTN_DESC))
+
+```
+
+### Filtering out some data
+
+Then, I am filtering out data that doesn't have OCCUR_DATE or STATISTICAL_MURDER_FLAG as they are significant for analysis
+
+```{r filter_data, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+# Filter data
+nypd_data <- nypd_data %>%
+  filter(!is.na(OCCUR_DATE) & !is.na(STATISTICAL_MURDER_FLAG))
+
+# Summarize the cleaned data
+summary(nypd_data)
+```
+
+### Examining unique values for all categories
+
+```{r issues_anomalies, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Get columns that are either character or factor
+categorical_columns <- names(nypd_data)[sapply(nypd_data, function(x) is.character(x) | is.factor(x))]
+
+# Remove OCCUR_DATE and Lon_Lat as these have too many unique values
+categorical_columns <- setdiff(categorical_columns, c("OCCUR_DATE", "Lon_Lat"))
+
+# Print counts and percentages in the same table for each categorical variable
+for(col in categorical_columns) {
+  cat("\n===", col, "===\n")
+  freq_table <- table(nypd_data[[col]], useNA = "ifany")  # Frequency counts
+  percent_table <- round(prop.table(freq_table) * 100, 2)  # Percentages
+  
+  # Combine counts and percentages into a single data frame
+  combined_table <- data.frame(
+    Value = names(freq_table),
+    Count = as.vector(freq_table),
+    Percentage = as.vector(percent_table)
+  )
+  
+  print(combined_table)
+}
+```
+
+# Various analysis
+
+### Number of shootings and murders over time
+
+```{r shootings_over_time_vis, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Create summary by year with percentage
+yearly_summary <- nypd_data %>%
+  mutate(year = lubridate::year(OCCUR_DATE)) %>%
+  group_by(year) %>%
+  summarize(
+    total_shootings = n(),
+    total_murders = sum(STATISTICAL_MURDER_FLAG == TRUE),
+    death_percentage = round((sum(STATISTICAL_MURDER_FLAG == TRUE) / n()) * 100, 2)
+  ) %>%
+  arrange(year)
+
+# Display the results
+print(yearly_summary)
+
+# Ensure the year column is created
+nypd_data <- nypd_data %>%
+  filter(!is.na(OCCUR_DATE)) %>%  # Remove rows with missing OCCUR_DATE
+  mutate(year = lubridate::year(OCCUR_DATE))  # Extract year from OCCUR_DATE
+
+# Group data by year and count both shootings and murders
+nypd_data %>%
+  group_by(year) %>%
+  summarize(
+    total_shootings = n(),
+    total_murders = sum(STATISTICAL_MURDER_FLAG == TRUE)
+  ) %>%
+  ggplot() +
+  geom_line(aes(x = year, y = total_shootings, color = "Shootings"), linewidth = 1) +
+  geom_line(aes(x = year, y = total_murders, color = "Murders"), linewidth = 1) +
+  scale_x_continuous(breaks = seq(min(nypd_data$year, na.rm = TRUE), 
+                                max(nypd_data$year, na.rm = TRUE), by = 1)) +
+  scale_color_manual(values = c("Shootings" = "blue", "Murders" = "red")) +
+  labs(
+    title = "Number of Shootings and Murders Over Time",
+    x = "Year",
+    y = "Count",
+    color = "Type"
+  ) +
+  theme_minimal()
+```
+
+### Shootings per borough
+
+```{r shootings_per_borough_vis, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+# Count shootings by borough
+nypd_data %>%
+  group_by(BORO) %>%
+  summarize(total_shootings = n()) %>%
+  ggplot(aes(x = BORO, y = total_shootings, fill = BORO)) +
+  geom_bar(stat = "identity") +
+  labs(
+    title = "Shootings by Borough",
+    x = "Borough",
+    y = "Total Shootings"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+### Victims by race
+
+```{r shootings_vic_race_vis, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Count victims by race
+nypd_data %>%
+  group_by(VIC_RACE) %>%
+  summarize(total_victims = n()) %>%
+  ggplot(aes(x = VIC_RACE, y = total_victims, fill = VIC_RACE)) +
+  geom_bar(stat = "identity") +
+  labs(
+    title = "Victims by Race",
+    x = "Victim Race",
+    y = "Total Victims"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  coord_flip()
+```
+
+### Victim-Perp Heat Map 
+
+```{r victim_perp_race_match, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+nypd_data %>%
+  filter(!is.na(VIC_RACE) & !is.na(PERP_RACE)) %>%
+  group_by(VIC_RACE, PERP_RACE) %>%
+  summarize(count = n()) %>%
+  ggplot(aes(x = VIC_RACE, y = PERP_RACE, fill = count)) +
+  geom_tile() +
+  scale_fill_gradient(low = "white", high = "red") +
+  labs(
+    title = "Victim-Perpetrator Race Match Frequency",
+    x = "Victim Race",
+    y = "Perpetrator Race",
+    fill = "Count"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+### Shootings by time of day
+
+By looking at this hourly distribution, we can maybe have more patrols at certain times of day. For example between 9PM and 3AM as this is where more than half the shootings occur.
+
+```{r shootings_time_of_day, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Create table of shootings by hour
+hour_summary <- nypd_data %>%
+  filter(!is.na(OCCUR_TIME)) %>%
+  mutate(hour = as.numeric(substr(OCCUR_TIME, 1, 2))) %>%
+  group_by(hour) %>%
+  summarize(
+    number_of_shootings = n(),
+    percentage = round(n() / nrow(nypd_data) * 100, 2)
+  ) %>%
+  arrange(hour)
+
+# Print the formatted table
+knitr::kable(hour_summary, 
+             col.names = c("Hour", "Number of Shootings", "Percentage (%)"),
+             align = c("c", "c", "c"),
+             caption = "Distribution of Shootings by Hour of Day")
+```
+
+### Map of shooting locations and murders
+
+By looking at this map, we can maybe assign more police officers in certain areas based on the frequency of shootings
+
+```{r map_shooting, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+# Create a map of shooting locations
+library(leaflet)
+# Separate the data into murders and non-fatal shootings
+murders <- nypd_data %>%
+  filter(!is.na(Latitude) & !is.na(Longitude) & STATISTICAL_MURDER_FLAG == TRUE)
+
+shootings <- nypd_data %>%
+  filter(!is.na(Latitude) & !is.na(Longitude) & STATISTICAL_MURDER_FLAG == FALSE)
+
+# Create the map
+leaflet() %>%
+  addTiles() %>%  # Add default OpenStreetMap tiles
+  # Add non-fatal shootings (red)
+  addCircleMarkers(
+    data = shootings,
+    lng = ~Longitude, 
+    lat = ~Latitude,
+    radius = 0.1,
+    color = "red",
+    fillOpacity = 0.5,
+    popup = ~paste("Date:", OCCUR_DATE, "<br>Borough:", BORO)
+  ) %>%
+  # Add murders (blue)
+  addCircleMarkers(
+    data = murders,
+    lng = ~Longitude, 
+    lat = ~Latitude,
+    radius = 0.1,
+    color = "blue",
+    fillOpacity = 0.5,
+    popup = ~paste("Date:", OCCUR_DATE, "<br>Borough:", BORO)
+  ) %>%
+  setView(
+    lng = -73.95,  # Approximate center of NYC
+    lat = 40.71,
+    zoom = 11
+  )
+```
+
+# Session info
+
+```{r session_info, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+# Print session information
+sessionInfo()
+```
+
+# Conclusion
+
+The NYPD shooting incidents from the data include years 2006 to 2023.
+The patterns and trends show that the shootings reduced from the year 2006 to 2019 and rose again in 2020, which I am guessing can be linked to the start of the COVID-19 pandemic.
+The data shows that Brooklyn and the Bronx have higher shooting incidents than other boroughs.
+Another significant factor is the shooting victims’ and the perpetrators' race.
+The data shows they are predominantly Black.
+
+Potential sources of bias should be considered when interpreting this data. For example:
+
+Not every shooting incident may be reported or recorded equally.The analysis revealed that there was a substantial absence of data in several categories.
+
+The levels of police presence and the differences in the reporting of crimes in the various neighborhoods may be a factor.
+
+There also could be personal and confirmation biases that could influence this analysis.
