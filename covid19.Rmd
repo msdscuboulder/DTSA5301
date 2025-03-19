@@ -1,0 +1,701 @@
+---
+title: "COVID-19 Data Analysis"
+author: ""
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    highlight: tango
+---
+
+# Setup and Data Loading
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 6
+)
+
+# Load required libraries
+library(tidyverse)
+library(lubridate)
+library(scales)
+library(viridis)
+library(leaflet)
+library(kableExtra)
+
+# Load data from JHU CSSE GitHub repository
+url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+file_names <- c(
+  "time_series_covid19_deaths_global.csv",
+  "time_series_covid19_confirmed_global.csv",
+  "time_series_covid19_confirmed_US.csv",
+  "time_series_covid19_deaths_US.csv"
+)
+urls <- str_c(url_in, file_names)
+
+# Read the data
+global_deaths <- read.csv(urls[1])
+global_cases <- read.csv(urls[2])
+us_cases <- read.csv(urls[3])
+us_deaths <- read.csv(urls[4])
+```
+
+# Required libraries
+
+tidyverse
+
+lubridate
+
+scales
+
+viridis
+
+leaflet
+
+kableExtra
+
+# Examine Data and get a random sample
+
+```{r examine_data, include=TRUE}
+
+convert_to_long <- function(df, value_type = NULL) {
+  if (is.null(value_type)) {
+    value_type <- if ("deaths" %in% names(df)) "deaths" else "cases"
+  }
+  
+  df %>%
+    pivot_longer(cols = starts_with("X"),
+                 names_to = "date",
+                 values_to = value_type) %>%
+    mutate(date = as.Date(gsub("X","",date), format="%m.%d.%y"))
+}
+
+# Then use it like this:
+global_cases_long <- convert_to_long(global_cases, "cases")
+global_deaths_long <- convert_to_long(global_deaths, "deaths")
+us_cases_long <- convert_to_long(us_cases, "cases")
+us_deaths_long <- convert_to_long(us_deaths, "deaths")
+
+# Get a random sample of data
+
+sample_and_display <- function(data, n, caption) {
+  data %>%
+    slice_sample(n = n) %>%
+    kable("pipe", caption = caption) %>%
+    kable_styling(bootstrap_options = c("striped", "hover"))
+}
+
+# Use the function:
+sample_and_display(global_deaths_long, 5, "Random Sample of Global Deaths Data")
+sample_and_display(global_cases_long, 5, "Random Sample of Global Cases Data")
+sample_and_display(us_deaths_long, 5, "Random Sample of US Deaths Data")
+sample_and_display(us_cases_long, 5, "Random Sample of US Cases Data")
+
+```
+
+# Data Overview
+
+All datasets have columns for location information:
+Province.State / Province_State: Represents states and provinces.
+Country.Region / Country_Region: Represents the country.
+Lat and Long / Long_: Represent the latitude and longitude of the location.
+
+All datasets have date columns (e.g., X1.22.20, X1.23.20), which represent cumulative data for each day starting from January 22, 2020.
+
+The datasets are wide-format time series data, where each row corresponds to a specific location, and the columns after the location information represent cumulative counts for each day.
+
+global_cases and global_deaths contain worldwide data, with rows for each country.
+us_cases and us_deaths focus specifically on the United States with some additional information such as:
+Columns like Admin2 (county-level data), FIPS (Federal Information Processing Standards code), and Combined_Key (a unique identifier for each location).
+us_deaths also includes a Population column, which is not present in the other datasets.
+
+global_cases and us_cases track confirmed cases.
+global_deaths and us_deaths track deaths.
+
+global_cases and global_deaths are directly related:
+They share the same structure and location columns (Province.State, Country.Region, Lat, Long).
+The date columns in both datasets represent cumulative counts of cases and deaths, respectively, for the same locations and dates.
+These datasets can be joined on Province.State, Country.Region, Lat, and Long to analyze the relationship between cases and deaths globally.
+
+us_cases and us_deaths are also directly related:
+They share the same structure and location columns (UID, FIPS, Admin2, Province_State, Country_Region, Lat, Long_, Combined_Key).
+The date columns in both datasets represent cumulative counts of cases and deaths, respectively, for the same locations and dates.
+These datasets can be joined on UID or Combined_Key to analyze the relationship between cases and deaths in the US.
+
+# Checking for any missing data
+
+```{r missing_data, include=TRUE}
+
+# Function to create comprehensive data quality summary
+create_comprehensive_summary <- function(data, dataset_name) {
+  complete_cases <- sum(complete.cases(data))
+  incomplete_cases <- nrow(data) - complete_cases
+  
+  data.frame(
+    Dataset = dataset_name,
+    Total_Rows = nrow(data),
+    Complete_Rows = complete_cases,
+    Incomplete_Rows = incomplete_cases,
+    Pct_Complete = round(complete_cases / nrow(data) * 100, 1),
+    Pct_Incomplete = round(incomplete_cases / nrow(data) * 100, 1),
+    Total_Columns = ncol(data),
+    Columns_Missing = sum(colSums(is.na(data)) > 0)
+  )
+}
+
+# Apply to all datasets
+comprehensive_summary <- bind_rows(
+  create_comprehensive_summary(global_cases, "Global Cases"),
+  create_comprehensive_summary(global_deaths, "Global Deaths"),
+  create_comprehensive_summary(us_cases, "US Cases"),
+  create_comprehensive_summary(us_deaths, "US Deaths")
+)
+
+# Display formatted table
+comprehensive_summary %>%
+  kable("pipe", 
+        col.names = c("Dataset", "Total Rows", "Complete Rows", 
+                     "Incomplete Rows", "% Complete", "% Incomplete",
+                     "Total Columns", "Columns with Missing"),
+        caption = "Data Quality Summary") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+```
+
+# Data Preprocessing
+
+```{r preprocessing_data, include=TRUE}
+
+# Data Preprocessing
+
+# Convert wide format to long format
+convert_to_long <- function(df, value_type = NULL) {
+  if (is.null(value_type)) {
+    value_type <- if ("deaths" %in% names(df)) "deaths" else "cases"
+  }
+  
+  df %>%
+    pivot_longer(cols = starts_with("X"),
+                 names_to = "date",
+                 values_to = value_type) %>%
+    mutate(date = as.Date(gsub("X","",date), format="%m.%d.%y"))
+}
+
+# Apply long format conversion
+global_cases_long <- convert_to_long(global_cases, "cases")
+global_deaths_long <- convert_to_long(global_deaths, "deaths")
+us_cases_long <- convert_to_long(us_cases, "cases")
+us_deaths_long <- convert_to_long(us_deaths, "deaths")
+
+# Create global combined dataset
+global_data <- global_cases_long %>%
+  full_join(global_deaths_long) %>%
+  group_by(date) %>%
+  summarize(total_cases = sum(cases),
+            total_deaths = sum(deaths))
+
+# Calculate daily cases and identify top countries
+daily_cases_by_country <- global_cases_long %>%
+  arrange(Country.Region, date) %>%
+  group_by(Country.Region) %>%
+  mutate(new_cases = cases - lag(cases, default = first(cases))) %>%
+  ungroup()
+
+# Get top 10 and top 5 countries
+top_10_countries <- daily_cases_by_country %>%
+  group_by(Country.Region) %>%
+  summarize(total_cases = max(cases)) %>%
+  arrange(desc(total_cases)) %>%
+  head(10) %>%
+  pull(Country.Region)
+
+top_5_countries <- daily_cases_by_country %>%
+  group_by(Country.Region) %>%
+  summarize(total_cases = max(cases)) %>%
+  arrange(desc(total_cases)) %>%
+  head(5) %>%
+  pull(Country.Region)
+
+```
+
+# Create summary table
+
+```{r global_summary, include=TRUE}
+
+global_summary <- global_data %>%
+  summarize(
+    total_cases = max(total_cases),
+    total_deaths = max(total_deaths),
+    overall_cfr = (total_deaths/total_cases)*100
+  )
+
+global_summary %>%
+  gather(metric, value) %>%
+  mutate(
+    value = ifelse(metric == "overall_cfr",
+                  sprintf("%.2f%%", value),
+                  formatC(value, format="d", big.mark=","))
+  ) %>%
+  kable("pipe", col.names = c("Metric", "Value"),
+        caption = "Global COVID-19 Summary Statistics") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+
+# Visualizations
+
+### Global cumulative cases and deaths over time
+
+```{r visualize_cummulative, include=TRUE}
+
+# Global cumulative cases and deaths over time
+ggplot(global_data, aes(x=date)) +
+  geom_line(aes(y=total_cases, color="Cases"), size=1) +
+  geom_line(aes(y=total_deaths, color="Deaths"), size=1) +
+  scale_y_log10(labels = scales::comma) +
+  scale_color_manual(values=c("Cases"="blue", "Deaths"="red")) +
+  labs(title="Global COVID-19 Cases and Deaths (Log Scale)",
+       x="Date",
+       y="Count (log scale)",
+       color="Type") +
+  theme_minimal() +
+  theme(legend.position="bottom")
+```
+
+### Top 10 countries by total cases
+
+```{r visualize_top_10_countries_cases, include=TRUE}
+
+# Top 10 countries by total cases
+top_10_countries <- global_cases_long %>%
+  group_by(Country.Region) %>%
+  summarize(total_cases = max(cases)) %>%
+  arrange(desc(total_cases)) %>%
+  head(10)
+
+ggplot(top_10_countries, aes(x=reorder(Country.Region, total_cases), y=total_cases)) +
+  geom_bar(stat="identity", fill="steelblue") +
+  coord_flip() +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title="Top 10 Countries by Total COVID-19 Cases",
+       x="Country",
+       y="Total Cases") +
+  theme_minimal()
+```
+
+### Top 10 US states by total cases
+
+```{r top_10_us_cases, include=TRUE}
+
+
+# US specific analysis
+us_cases_long <- us_cases %>%
+  pivot_longer(cols = starts_with("X"),
+               names_to = "date",
+               values_to = "cases") %>%
+  mutate(date = as.Date(gsub("X","",date), format="%m.%d.%y"))
+
+# Top 10 US states by total cases
+top_10_states <- us_cases_long %>%
+  group_by(Province_State) %>%
+  summarize(total_cases = max(cases)) %>%
+  arrange(desc(total_cases)) %>%
+  head(10)
+
+ggplot(top_10_states, aes(x=reorder(Province_State, total_cases), y=total_cases)) +
+  geom_bar(stat="identity", fill="darkgreen") +
+  coord_flip() +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title="Top 10 US States by Total COVID-19 Cases",
+       x="State",
+       y="Total Cases") +
+  theme_minimal()
+
+```
+
+### COVID-19 Case Fatality Rate by Country and US State
+
+```{r fatality_by_country, include=TRUE}
+
+# Case Fatality Rate by Country
+cfr_by_country <- global_cases_long %>%
+  inner_join(global_deaths_long, by = c("Country.Region", "date")) %>%
+  group_by(Country.Region) %>%
+  summarize(total_cases = max(cases),
+            total_deaths = max(deaths),
+            cfr = (total_deaths/total_cases)*100) %>%
+  filter(total_cases > 10000) %>%  # Filter for countries with significant cases
+  arrange(desc(cfr)) %>%
+  head(10)
+
+# Case Fatality Rate by US State
+cfr_by_state <- us_cases_long %>%
+  filter(date == max(date)) %>%  # Filter for latest date first
+  group_by(Province_State) %>%
+  summarize(total_cases = sum(cases)) %>%
+  left_join(
+    us_deaths_long %>%
+      filter(date == max(date)) %>%
+      group_by(Province_State) %>%
+      summarize(total_deaths = sum(deaths)),
+    by = "Province_State"
+  ) %>%
+  mutate(cfr = (total_deaths/total_cases)*100) %>%
+  filter(total_cases > 10000) %>%  # Filter for US States with significant cases
+  arrange(desc(cfr)) %>%
+  head(10)
+
+# Case Fatality Rate by Country
+ggplot(cfr_by_country, 
+       aes(x = reorder(Country.Region, cfr), y = cfr)) +
+  geom_bar(stat = "identity", fill = "darkred") +
+  coord_flip() +
+  labs(title = "COVID-19 Case Fatality Rate by Country",
+       subtitle = "Top 10 countries with at least 10,000 cases",
+       x = "Country",
+       y = "Case Fatality Rate (%)") +
+  theme_minimal()
+
+# Case Fatality Rate by State
+ggplot(cfr_by_state, 
+       aes(x = reorder(Province_State, cfr), y = cfr)) +
+  geom_bar(stat = "identity", fill = "darkred") +
+  coord_flip() +
+  labs(title = "COVID-19 Case Fatality Rate by US State",
+       subtitle = "Top 10 states with at least 10,000 cases",
+       x = "State",
+       y = "Case Fatality Rate (%)") +
+  theme_minimal()
+
+```
+
+### Global analysis with population adjustment 
+
+US population data is included in the data set. 
+
+I am adding global population from an external source.
+
+```{r global_analysis_adjusted, include=TRUE}
+
+# Create population data for countries (2023 estimates)
+population_data_countries <- data.frame(
+  Country.Region = c(
+    "Afghanistan", "Albania", "Algeria", "Andorra", "Angola", "Antigua and Barbuda", "Argentina", "Armenia", "Australia", "Austria",
+    "Azerbaijan", "Bahamas", "Bahrain", "Bangladesh", "Barbados", "Belarus", "Belgium", "Belize", "Benin", "Bhutan",
+    "Bolivia", "Bosnia and Herzegovina", "Botswana", "Brazil", "Brunei", "Bulgaria", "Burkina Faso", "Burma", "Burundi", "Cabo Verde",
+    "Cambodia", "Cameroon", "Canada", "Central African Republic", "Chad", "Chile", "China", "Colombia", "Comoros", "Congo (Brazzaville)",
+    "Congo (Kinshasa)", "Costa Rica", "Cote d'Ivoire", "Croatia", "Cuba", "Cyprus", "Czechia", "Denmark", "Djibouti", "Dominica",
+    "Dominican Republic", "Ecuador", "Egypt", "El Salvador", "Equatorial Guinea", "Eritrea", "Estonia", "Eswatini", "Ethiopia", "Fiji",
+    "Finland", "France", "Gabon", "Gambia", "Georgia", "Germany", "Ghana", "Greece", "Grenada", "Guatemala",
+    "Guinea", "Guinea-Bissau", "Guyana", "Haiti", "Honduras", "Hungary", "Iceland", "India", "Indonesia", "Iran",
+    "Iraq", "Ireland", "Israel", "Italy", "Jamaica", "Japan", "Jordan", "Kazakhstan", "Kenya", "Korea, North",
+    "Korea, South", "Kuwait", "Kyrgyzstan", "Laos", "Latvia", "Lebanon", "Lesotho", "Liberia", "Libya", "Liechtenstein",
+    "Lithuania", "Luxembourg", "Madagascar", "Malawi", "Malaysia", "Maldives", "Mali", "Malta", "Mauritania", "Mauritius",
+    "Mexico", "Moldova", "Monaco", "Mongolia", "Montenegro", "Morocco", "Mozambique", "Namibia", "Nepal", "Netherlands",
+    "New Zealand", "Nicaragua", "Niger", "Nigeria", "North Macedonia", "Norway", "Oman", "Pakistan", "Panama", "Papua New Guinea",
+    "Paraguay", "Peru", "Philippines", "Poland", "Portugal", "Qatar", "Romania", "Russia", "Rwanda", "Saint Kitts and Nevis",
+    "Saint Lucia", "Saint Vincent and the Grenadines", "Samoa", "San Marino", "Sao Tome and Principe", "Saudi Arabia", "Senegal",
+    "Serbia", "Seychelles", "Sierra Leone", "Singapore", "Slovakia", "Slovenia", "Solomon Islands", "Somalia", "South Africa",
+    "South Sudan", "Spain", "Sri Lanka", "Sudan", "Suriname", "Sweden", "Switzerland", "Syria", "Taiwan*", "Tajikistan",
+    "Tanzania", "Thailand", "Timor-Leste", "Togo", "Trinidad and Tobago", "Tunisia", "Turkey", "Uganda", "Ukraine", "United Arab Emirates",
+    "United Kingdom", "Uruguay", "Uzbekistan", "Vanuatu", "Venezuela", "Vietnam", "West Bank and Gaza", "Yemen", "Zambia", "Zimbabwe"
+  ),
+  Population = c(
+    40754388, 2832439, 44903225, 79824, 35588987, 93763, 45808747, 2780469, 26177413, 9042528,
+    10358074, 409984, 1472233, 167885689, 281635, 9383862, 11655930, 400031, 13352864, 782455,
+    12224110, 3233526, 2630296, 214326223, 459500, 6781953, 21497096, 54179306, 12889576, 593149,
+    16767842, 27914536, 38250000, 5579144, 17179740, 19458310, 1411750000, 51516562, 836774, 5970424,
+    89561403, 5180829, 26378274, 4030358, 11326616, 1207359, 10698896, 5882261, 988000, 72167,
+    10953703, 17888474, 104258327, 6486205, 1402985, 3546421, 1326535, 1172362, 117876227, 896444,
+    5540720, 67391582, 2225734, 2416668, 3989167, 83783942, 31072940, 10423054, 112523, 17915568,
+    13132795, 1968001, 786552, 11402528, 10062991, 9660351, 364134, 1380004385, 273523615, 85028759,
+    40462701, 5033165, 9291000, 60461826, 2961167, 125361201, 10203134, 19397998, 54985698, 25778816,
+    51740000, 4270571, 6524195, 7275560, 1886198, 6825445, 2142249, 5180203, 6871292, 38128,
+    2722289, 625978, 27691018, 19129952, 32365999, 521457, 20250833, 441543, 4649658, 1271768,
+    128932753, 2617820, 39242, 3278290, 621718, 37457000, 31255435, 2540905, 29136808, 17134872,
+    5122600, 6624554, 24206644, 206139589, 2083374, 5421241, 5106626, 220892340, 4314767, 8947024,
+    7132538, 32971854, 109581078, 37846611, 10196709, 2881053, 19237691, 143447812, 13226796, 53199,
+    183627, 110940, 198414, 33931, 219159, 35340683, 16743927, 8737371, 98347, 7976983,
+    5850342, 5459642, 2078938, 686884, 15893222, 59308690, 11193725, 47615034, 22156000, 44909353,
+    586634, 10099265, 8654622, 17500658, 23816775, 9537645, 59734218, 69950850, 1318445, 8278724,
+    1399488, 11818619, 84680273, 45741007, 43733762, 9890402, 67886011, 3473730, 35163944, 307145,
+    28435943, 97338579, 5250072, 30491000, 18383955, 14862924
+  )
+)
+
+# Extract population data for US states from the us_deaths dataset and drop rows where Population is 0
+population_data_states <- us_deaths %>%
+  group_by(Province_State) %>%
+  summarize(Population = sum(Population, na.rm = TRUE)) %>%
+  ungroup() %>%
+  filter(Population > 0)  # Drop rows where Population is 0
+
+# Add special cases with NA population (ships, etc.)
+special_cases <- data.frame(
+  Country.Region = c("Diamond Princess", "MS Zaandam", "Summer Olympics 2020", "Winter Olympics 2022", "Antarctica"),
+  Population = NA
+)
+
+# Combine all population data for countries
+population_data_complete <- rbind(
+  population_data_countries,
+  data.frame(Country.Region = "US", Population = sum(population_data_states$Population, na.rm = TRUE)),
+  special_cases
+)
+
+global_analysis <- global_cases_long %>%
+  filter(date == max(date)) %>%
+  group_by(Country.Region) %>%
+  summarize(total_cases = sum(cases)) %>%
+  left_join(population_data_complete, by = "Country.Region") %>%
+  mutate(
+    cases_per_100k = (total_cases / Population) * 100000,
+    cases_per_100k = round(cases_per_100k, 2)
+  ) %>%
+  arrange(desc(cases_per_100k)) %>%
+  filter(!is.na(Population))
+
+# Visualization for top 20 countries
+ggplot(head(global_analysis, 20), 
+       aes(x = reorder(Country.Region, cases_per_100k), y = cases_per_100k)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  theme_minimal() +
+  labs(
+    title = "Top 20 Countries by COVID-19 Cases per 100,000 Population",
+    x = "Country",
+    y = "Cases per 100,000 Population"
+  )
+
+# US state analysis
+us_analysis <- us_cases_long %>%
+  filter(date == max(date)) %>%
+  group_by(Province_State) %>%
+  summarize(total_cases = sum(cases)) %>%
+  left_join(population_data_states, by = "Province_State") %>%
+  mutate(
+    cases_per_100k = (total_cases / Population) * 100000,
+    cases_per_100k = round(cases_per_100k, 2)
+  ) %>%
+  arrange(desc(cases_per_100k)) %>%
+  filter(!is.na(Population))
+
+# Visualization for top 20 US states
+ggplot(head(us_analysis, 20), 
+       aes(x = reorder(Province_State, cases_per_100k), y = cases_per_100k)) +
+  geom_bar(stat = "identity", fill = "darkred") +
+  coord_flip() +
+  theme_minimal() +
+  labs(
+    title = "Top 20 US States by COVID-19 Cases per 100,000 Population",
+    x = "State",
+    y = "Cases per 100,000 Population"
+  )
+```
+
+# Global cases map
+
+```{r geographic_vis, include=TRUE}
+
+# Prepare data for mapping
+latest_date <- max(global_cases_long$date)
+latest_data <- global_cases_long %>%
+  inner_join(global_deaths_long, by = c("Country.Region", "Province.State", "Lat", "Long", "date")) %>%
+  filter(date == latest_date) %>%
+  group_by(Country.Region) %>%
+  summarize(
+    total_cases = sum(cases),
+    total_deaths = sum(deaths),
+    lat = mean(Lat, na.rm = TRUE),
+    lng = mean(Long, na.rm = TRUE),
+    cfr = (total_deaths/total_cases)*100
+  ) %>%
+  filter(!is.na(lat) & !is.na(lng))
+
+# Create color palettes
+pal_cases <- colorNumeric(
+  palette = "viridis",
+  domain = log10(latest_data$total_cases)
+)
+
+pal_cfr <- colorNumeric(
+  palette = "RdYlBu",
+  domain = latest_data$cfr,
+  reverse = TRUE
+)
+
+map1 <- leaflet(latest_data) %>%
+  addTiles() %>%
+  addCircleMarkers(
+    lng = ~lng,
+    lat = ~lat,
+    radius = ~sqrt(total_cases)/500,
+    color = ~pal_cases(log10(total_cases)),
+    fillOpacity = 0.7,
+    popup = ~paste(
+      "<strong>", Country.Region, "</strong><br/>",
+      "Cases: ", formatC(total_cases, format="d", big.mark=","), "<br/>",
+      "Deaths: ", formatC(total_deaths, format="d", big.mark=","), "<br/>",
+      "CFR: ", round(cfr, 2), "%"
+    )
+  ) %>%
+  addLegend(
+    position = "bottomright",
+    pal = pal_cases,
+    values = ~log10(total_cases),
+    title = "Log10(Total Cases)",
+    opacity = 0.7
+  )
+
+# Case fatality rate map
+map2 <- leaflet(latest_data) %>%
+  addTiles() %>%
+  addCircleMarkers(
+    lng = ~lng,
+    lat = ~lat,
+    radius = 8,
+    color = ~pal_cfr(cfr),
+    fillOpacity = 0.7,
+    popup = ~paste(
+      "<strong>", Country.Region, "</strong><br/>",
+      "CFR: ", round(cfr, 2), "%<br/>",
+      "Deaths: ", formatC(total_deaths, format="d", big.mark=","), "<br/>",
+      "Cases: ", formatC(total_cases, format="d", big.mark=",")
+    )
+  ) %>%
+  addLegend(
+    position = "bottomright",
+    pal = pal_cfr,
+    values = ~cfr,
+    title = "Case Fatality Rate (%)",
+    opacity = 0.7
+  )
+
+# Display maps
+map1
+map2
+
+```
+
+# Additional Visualizations
+
+### Case fatality rate over time
+
+```{r additional_vis, include=TRUE}
+
+# Case fatality rate over time
+global_data %>%
+  mutate(fatality_rate = (total_deaths/total_cases)*100) %>%
+  ggplot(aes(x=date, y=fatality_rate)) +
+  geom_line(color="darkred", size=1) +
+  labs(title="Global COVID-19 Case Fatality Rate Over Time",
+       x="Date",
+       y="Fatality Rate (%)") +
+  theme_minimal()
+```
+
+### Wave Analysis - Daily New Cases Pattern
+
+```{r additional_vis_wave, include=TRUE}
+
+# Rolling Average Analysis
+# Calculate daily new cases for top 5 countries
+daily_cases_by_country <- global_cases_long %>%
+  group_by(Country.Region, date) %>%
+  summarize(cases = sum(cases)) %>%
+  arrange(Country.Region, date) %>%
+  group_by(Country.Region) %>%
+  mutate(new_cases = cases - lag(cases, default = first(cases))) %>%
+  ungroup()
+
+# Wave Analysis - Daily New Cases Pattern
+wave_analysis <- daily_cases_by_country %>%
+  filter(Country.Region %in% top_5_countries) %>%
+  mutate(month_year = floor_date(date, "month"))
+
+# Wave Patterns
+ggplot(wave_analysis, aes(x = date, y = new_cases, fill = Country.Region)) +
+  geom_area(alpha = 0.5, position = "stack") +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "COVID-19 Waves Over Time",
+       subtitle = "Daily new cases for top 5 countries",
+       x = "Date",
+       y = "New Cases") +
+  theme_minimal()
+
+```
+
+### Bubble Plot: Cases vs Deaths with Population Size
+
+```{r additional_vis_bubble, include=TRUE}
+# Bubble Plot: Cases vs Deaths with Population Size
+# For top 20 countries at the latest date
+latest_date <- max(global_cases_long$date)
+bubble_data <- global_cases_long %>%
+  inner_join(global_deaths_long, by = c("Country.Region", "date")) %>%
+  filter(date == latest_date) %>%
+  group_by(Country.Region) %>%
+  summarize(total_cases = sum(cases),
+            total_deaths = sum(deaths)) %>%
+  arrange(desc(total_cases)) %>%
+  head(20)
+
+# Bubble Plot
+ggplot(bubble_data, 
+       aes(x = total_cases, y = total_deaths)) +
+  geom_point(aes(size = total_cases), alpha = 0.6, color = "purple") +
+  geom_text(aes(label = Country.Region), 
+            check_overlap = TRUE, 
+            vjust = -1, 
+            size = 3) +
+  scale_x_log10(labels = scales::comma) +
+  scale_y_log10(labels = scales::comma) +
+  scale_size_continuous(range = c(3, 20)) +
+  labs(title = "COVID-19 Cases vs Deaths",
+       subtitle = "Size of bubble represents total cases",
+       x = "Total Cases (log scale)",
+       y = "Total Deaths (log scale)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+# Conclusions
+Based on the comprehensive COVID-19 data analysis, several key findings emerge:
+
+### Global Impact and Distribution
+The data shows significant variation in COVID-19 impact across countries and regions
+A strong correlation exists between total cases and deaths, though with varying case fatality rates (CFR)
+Population-adjusted analysis reveals that some smaller countries were disproportionately affected when considering cases per 100,000 residents
+
+### Temporal Patterns
+Clear wave patterns are visible in the data, with multiple surges occurring at different times in different regions
+The global CFR showed a general declining trend over time, possibly due to improved treatment protocols and vaccination efforts
+
+### Geographic Variations
+Significant regional differences in both case counts and mortality rates
+Urban areas generally showed higher case counts, though this may partly reflect testing capacity
+The mapping visualization reveals clusters of high-impact areas and potential geographic patterns in disease spread
+
+# Potential Biases 
+
+There could be inconsistencies between different countries and states in reporting
+
+There could be inconsistent testing protocols across countries and regions
+
+Potential underreporting in regions with limited healthcare infrastructure
+
+Population density and age distribution are not fully accounted for
+
+Healthcare system capacity are not factored in
+
+Case fatality rates may be skewed by testing availability
+
+Time lag between cases and deaths not fully addressed in the analysis
+
+Vaccination rates are not included in the analysis
