@@ -46,6 +46,10 @@ us_cases <- read.csv(urls[3])
 us_deaths <- read.csv(urls[4])
 ```
 
+# Data source on Github
+
+https://raw.githubusercontent.com/msdscuboulder/DTSA5301/refs/heads/main/covid19.Rmd
+
 # Required libraries
 
 tidyverse
@@ -323,7 +327,7 @@ ggplot(top_10_states, aes(x=reorder(Province_State, total_cases), y=total_cases)
 
 ```{r fatality_by_country, include=TRUE}
 
-# Case Fatality Rate by Country
+# Top 10 countries by fatality rate
 cfr_by_country <- global_cases_long %>%
   inner_join(global_deaths_long, by = c("Country.Region", "date")) %>%
   group_by(Country.Region) %>%
@@ -332,6 +336,17 @@ cfr_by_country <- global_cases_long %>%
             cfr = (total_deaths/total_cases)*100) %>%
   filter(total_cases > 10000) %>%  # Filter for countries with significant cases
   arrange(desc(cfr)) %>%
+  head(10)
+
+# Bottom 10 countries by fatality rate
+cfr_bottom_10 <- global_cases_long %>%
+  inner_join(global_deaths_long, by = c("Country.Region", "date")) %>%
+  group_by(Country.Region) %>%
+  summarize(total_cases = max(cases),
+            total_deaths = max(deaths),
+            cfr = (total_deaths/total_cases)*100) %>%
+  filter(total_cases > 10000) %>%  # Filter for countries with significant cases
+  arrange(cfr) %>%
   head(10)
 
 # Case Fatality Rate by US State
@@ -351,13 +366,24 @@ cfr_by_state <- us_cases_long %>%
   arrange(desc(cfr)) %>%
   head(10)
 
-# Case Fatality Rate by Country
+# Top 10 Case Fatality Rate by Country
 ggplot(cfr_by_country, 
        aes(x = reorder(Country.Region, cfr), y = cfr)) +
   geom_bar(stat = "identity", fill = "darkred") +
   coord_flip() +
   labs(title = "COVID-19 Case Fatality Rate by Country",
        subtitle = "Top 10 countries with at least 10,000 cases",
+       x = "Country",
+       y = "Case Fatality Rate (%)") +
+  theme_minimal()
+
+# Visualization for bottom 10 countries by fatality rate
+ggplot(cfr_bottom_10, 
+       aes(x = reorder(Country.Region, -cfr), y = cfr)) +
+  geom_bar(stat = "identity", fill = "lightgreen") +
+  coord_flip() +
+  labs(title = "Bottom 10 Countries by COVID-19 Case Fatality Rate",
+       subtitle = "Countries with at least 10,000 cases",
        x = "Country",
        y = "Case Fatality Rate (%)") +
   theme_minimal()
@@ -461,6 +487,12 @@ global_analysis <- global_cases_long %>%
   arrange(desc(cases_per_100k)) %>%
   filter(!is.na(Population))
 
+
+# Bottom 20 countries by cases per 100,000
+bottom_20_per_capita <- global_analysis %>%
+  arrange(cases_per_100k) %>%
+  head(20)
+
 # Visualization for top 20 countries
 ggplot(head(global_analysis, 20), 
        aes(x = reorder(Country.Region, cases_per_100k), y = cases_per_100k)) +
@@ -469,6 +501,18 @@ ggplot(head(global_analysis, 20),
   theme_minimal() +
   labs(
     title = "Top 20 Countries by COVID-19 Cases per 100,000 Population",
+    x = "Country",
+    y = "Cases per 100,000 Population"
+  )
+
+# Visualization for bottom 20 countries by cases per 100,000
+ggplot(bottom_20_per_capita, 
+       aes(x = reorder(Country.Region, -cases_per_100k), y = cases_per_100k)) +
+  geom_bar(stat = "identity", fill = "lightblue") +
+  coord_flip() +
+  theme_minimal() +
+  labs(
+    title = "Bottom 20 Countries by COVID-19 Cases per 100,000 Population",
     x = "Country",
     y = "Cases per 100,000 Population"
   )
